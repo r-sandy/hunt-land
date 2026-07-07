@@ -9,12 +9,14 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}  # re-run the snap job manually, e.g. after adding store credentials
 
 permissions:
   contents: write
 
 jobs:
   packages:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

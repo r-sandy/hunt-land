@@ -8,8 +8,9 @@
 class HuntLand < Formula
   desc "Living-off-the-Land forensic hunter for Blue Team defenders"
   homepage "https://github.com/r-sandy/hunt-land"
-  url "https://github.com/r-sandy/hunt-land.git", tag: "v1.0.0"
-  version "1.0.0"
+  url "https://github.com/r-sandy/hunt-land.git", tag: "v1.0.1"
+  version "1.0.1"
+  license "MIT"
 
   def install
     bin.install Dir["tools/bin/hunt-*"]

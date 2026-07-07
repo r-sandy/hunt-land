@@ -14,6 +14,7 @@ description: |
 
   Use only on hosts you are authorized to inspect.
 grade: stable
+license: MIT
 
 # Classic confinement is required: the hunters must read the *host's*
 # /proc, /etc, crontabs, systemd units, and user homes — strict confinement

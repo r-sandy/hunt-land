@@ -2,7 +2,7 @@ Name:           hunt-land
 Version:        %{hunt_version}
 Release:        1%{?dist}
 Summary:        Living-off-the-Land forensic hunter for Blue Team defenders
-License:        TBD
+License:        MIT
 URL:            https://github.com/r-sandy/hunt-land
 BuildArch:      noarch
 Requires:       bash
@@ -25,6 +25,7 @@ install -m 0644 %{repo_root}/tools/lib/hunt-common.sh \
     %{buildroot}%{_prefix}/lib/hunt-land/hunt-common.sh
 
 %files
+%license LICENSE
 %{_bindir}/hunt-land
 %{_bindir}/hunt-procs
 %{_bindir}/hunt-net
@@ -37,5 +38,8 @@ install -m 0644 %{repo_root}/tools/lib/hunt-common.sh \
 %doc README.md
 
 %changelog
-* Mon Jul 07 2026 r-sandy <symlir.diglm@gmail.com> - 1.0.0-1
+* Tue Jul 07 2026 r-sandy <symlir.diglm@gmail.com> - 1.0.1-1
+- Add MIT license
+
+* Mon Jul 06 2026 r-sandy <symlir.diglm@gmail.com> - 1.0.0-1
 - Initial package

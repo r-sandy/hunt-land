@@ -1,7 +1,7 @@
 # hunt-common.sh — shared helpers for the hunt-land toolkit
 # Sourced by every hunt-* tool. Must stay bash 3.2 compatible (macOS default).
 
-HUNT_VERSION="1.0.0"
+HUNT_VERSION="1.0.1"
 
 case "$(uname -s)" in
     Linux)  HUNT_PLATFORM="linux" ;;

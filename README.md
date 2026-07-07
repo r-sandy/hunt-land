@@ -105,4 +105,4 @@ before eradication when an incident may need legal/HR follow-up.
 
 ## License
 
-See repository for license terms.
+[MIT](LICENSE)

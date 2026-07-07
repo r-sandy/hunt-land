@@ -19,6 +19,7 @@ for t in $TOOLS; do
 done
 install -m 0644 "$REPO/tools/lib/hunt-common.sh" "$PKG/usr/lib/hunt-land/hunt-common.sh"
 install -m 0644 "$REPO/README.md" "$PKG/usr/share/doc/hunt-land/README.md"
+install -m 0644 "$REPO/LICENSE" "$PKG/usr/share/doc/hunt-land/copyright"
 
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: hunt-land

@@ -1,5 +1,15 @@
 # hunt-land
 
+```
+ _                 _             _                 _
+| |__  _   _ _ __ | |_   _____  | | __ _ _ __   __| |
+| '_ \| | | | '_ \| __| |_____| | |/ _` | '_ \ / _` |
+| | | | |_| | | | | |_          | | (_| | | | | (_| |
+|_| |_|\__,_|_| |_|\__|         |_|\__,_|_| |_|\__,_|
+ ~ ~~ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ~~ ~ ~
+     Living-off-the-Land forensic hunter
+```
+
 **Living-off-the-Land (LotL) forensic hunter for Cybersecurity defenders.**
 
 For when a host is suspected compromised but AV/EDR shows **zero file-based

@@ -8,8 +8,8 @@
 class HuntLand < Formula
   desc "Living-off-the-Land forensic hunter for Blue Team defenders"
   homepage "https://github.com/r-sandy/hunt-land"
-  url "https://github.com/r-sandy/hunt-land.git", tag: "v1.0.1"
-  version "1.0.1"
+  url "https://github.com/r-sandy/hunt-land.git", tag: "v1.0.2"
+  version "1.0.2"
   license "MIT"
 
   def install

@@ -38,6 +38,9 @@ install -m 0644 %{repo_root}/tools/lib/hunt-common.sh \
 %doc README.md
 
 %changelog
+* Tue Jul 07 2026 r-sandy <symlir.diglm@gmail.com> - 1.0.2-1
+- Fix per-phase findings tally leaking cumulative counts under the orchestrator
+
 * Tue Jul 07 2026 r-sandy <symlir.diglm@gmail.com> - 1.0.1-1
 - Add MIT license
 

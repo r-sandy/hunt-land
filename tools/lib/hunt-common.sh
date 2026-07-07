@@ -1,7 +1,7 @@
 # hunt-common.sh — shared helpers for the hunt-land toolkit
 # Sourced by every hunt-* tool. Must stay bash 3.2 compatible (macOS default).
 
-HUNT_VERSION="1.0.1"
+HUNT_VERSION="1.0.2"
 
 case "$(uname -s)" in
     Linux)  HUNT_PLATFORM="linux" ;;
@@ -22,6 +22,14 @@ fi
 # The orchestrator exports HUNT_FINDINGS so all phases share one file.
 if [ -z "${HUNT_FINDINGS:-}" ]; then
     HUNT_FINDINGS=$(mktemp "${TMPDIR:-/tmp}/hunt-findings.XXXXXX")
+fi
+
+# Findings already present when this tool started (earlier phases under the
+# orchestrator). finding_summary reports only this tool's own additions.
+if [ -f "$HUNT_FINDINGS" ]; then
+    _HUNT_BASELINE=$(($(wc -l < "$HUNT_FINDINGS") + 0))
+else
+    _HUNT_BASELINE=0
 fi
 
 # Sand-and-beach banner. Only when stdout is a terminal; 256-color gradient
@@ -68,9 +76,10 @@ finding() {
 }
 
 finding_summary() {
-    _h=$(grep -c '^HIGH'   "$HUNT_FINDINGS" 2>/dev/null); _h=${_h:-0}
-    _m=$(grep -c '^MEDIUM' "$HUNT_FINDINGS" 2>/dev/null); _m=${_m:-0}
-    _l=$(grep -c '^LOW'    "$HUNT_FINDINGS" 2>/dev/null); _l=${_l:-0}
+    _own=$(tail -n "+$((_HUNT_BASELINE + 1))" "$HUNT_FINDINGS" 2>/dev/null)
+    _h=$(printf '%s\n' "$_own" | grep -c '^HIGH')
+    _m=$(printf '%s\n' "$_own" | grep -c '^MEDIUM')
+    _l=$(printf '%s\n' "$_own" | grep -c '^LOW')
     hunt_header "Findings summary"
     printf '  %sHIGH: %s%s   %sMEDIUM: %s%s   LOW: %s\n' \
         "$C_RED" "$_h" "$C_RST" "$C_YEL" "$_m" "$C_RST" "$_l"

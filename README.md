@@ -1,6 +1,6 @@
 # hunt-land
 
-**Living-off-the-Land (LotL) forensic hunter for Blue Team defenders.**
+**Living-off-the-Land (LotL) forensic hunter for Cybersecurity defenders.**
 
 For when a host is suspected compromised but AV/EDR shows **zero file-based
 alerts** — because the adversary is abusing native, signed, built-in tooling

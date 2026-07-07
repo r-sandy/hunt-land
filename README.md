@@ -38,13 +38,24 @@ independent signals converge:
 - **Preserve the timeline** — capture volatile state before touching anything; record the exact command run.
 - **Assume you are watched** — prefer quiet native collection; run threat-intel lookups from the analyst host, never the suspect box.
 
+## Install (CLI toolkit)
+
+| Channel | Command |
+|---------|---------|
+| **snap** | `sudo snap install hunt-land --classic` |
+| **apt** (Debian/Ubuntu) | download the `.deb` from [Releases](https://github.com/r-sandy/hunt-land/releases), then `sudo apt install ./hunt-land_*_all.deb` |
+| **yum/dnf** (RHEL/Fedora) | download the `.rpm` from [Releases](https://github.com/r-sandy/hunt-land/releases), then `sudo dnf install ./hunt-land-*.noarch.rpm` |
+| **brew** (macOS/Linux) | `brew tap r-sandy/hunt-land https://github.com/r-sandy/hunt-land && brew install hunt-land` |
+| **from source** | `git clone https://github.com/r-sandy/hunt-land && hunt-land/tools/install.sh` |
+
+Packages are built from [`packaging/`](packaging/) and `snap/snapcraft.yaml`;
+pushing a `v*` tag triggers the [release workflow](.github/workflows/release.yml),
+which attaches the `.deb`, `.rpm`, and tarball to a GitHub Release and uploads
+the snap when store credentials are configured.
+
 ## Quick start (CLI toolkit)
 
 ```sh
-git clone git@github.com:r-sandy/hunt-land.git
-cd hunt-land
-tools/install.sh                 # installs to /usr/local or ~/.local
-
 sudo hunt-land --watch           # full hunt → Compromise Assessment Report
 
 # then, on YOUR workstation (never the suspect host):

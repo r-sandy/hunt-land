@@ -1,0 +1,66 @@
+name: release
+
+# Tag a version to publish:  git tag v1.0.0 && git push origin v1.0.0
+# - builds .deb + .rpm and attaches them (plus a tarball) to a GitHub Release
+# - prints the tarball sha256 for the Homebrew formula
+# - builds the snap; uploads to the Snap Store only if the
+#   SNAPCRAFT_STORE_CREDENTIALS secret is set (snapcraft export-login)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .deb
+        run: packaging/deb/build-deb.sh
+
+      - name: Build .rpm
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm
+          packaging/rpm/build-rpm.sh
+
+      - name: Tarball + checksums
+        run: |
+          git archive --format=tar.gz --prefix="hunt-land-${GITHUB_REF_NAME#v}/" \
+            -o "dist/hunt-land-${GITHUB_REF_NAME#v}.tar.gz" "$GITHUB_REF_NAME"
+          (cd dist && sha256sum * | tee SHA256SUMS)
+          echo "^ use the .tar.gz sha256 in Formula/hunt-land.rb"
+
+      - name: Smoke-test the .deb
+        run: |
+          sudo apt-get install -y ./dist/hunt-land_*_all.deb
+          hunt-land --help
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+
+  snap:
+    runs-on: ubuntu-latest
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snapcore/action-build@v1
+        id: build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap
+          path: ${{ steps.build.outputs.snap }}
+
+      - uses: snapcore/action-publish@v1
+        if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable

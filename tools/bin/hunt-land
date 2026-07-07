@@ -9,6 +9,7 @@ done
 [ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
 
 usage() {
+    hunt_banner
     cat <<EOF
 hunt-land v$HUNT_VERSION — Living-off-the-Land forensic hunter ($HUNT_PLATFORM)
 
@@ -59,6 +60,7 @@ run_phase() {  # run_phase <label> <cmd...>
     "$@" 2>&1 | tee -a "$RAW"
 }
 
+hunt_banner
 echo "$C_BLD== hunt-land compromise assessment — $HOST @ $(hunt_ts) ==$C_RST"
 require_root_or_warn
 

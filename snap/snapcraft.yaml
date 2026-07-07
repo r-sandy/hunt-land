@@ -1,0 +1,51 @@
+name: hunt-land
+base: core24
+adopt-info: hunt-land
+summary: Living-off-the-Land forensic hunter for Blue Team defenders
+description: |
+  Read-only compromise-assessment toolkit for hosts where AV/EDR shows zero
+  file-based alerts but the adversary is abusing native, signed, built-in
+  tooling (bash, cron, systemd, curl, LOLBins) instead of dropping malware.
+
+  Runs a six-phase hunt pipeline — process tree, network, persistence,
+  memory, LOLBin usage, correlation — and emits a ranked Compromise
+  Assessment Report mapped to MITRE ATT&CK. Nothing is killed, blocked, or
+  deleted; the hunters only observe.
+
+  Use only on hosts you are authorized to inspect.
+grade: stable
+
+# Classic confinement is required: the hunters must read the *host's*
+# /proc, /etc, crontabs, systemd units, and user homes — strict confinement
+# would blind exactly the visibility this tool exists to provide.
+# NOTE: classic snaps need a one-time approval from the Snap Store review
+# team (https://forum.snapcraft.io/c/store-requests) before `snapcraft
+# upload` will release them.
+confinement: classic
+
+parts:
+  hunt-land:
+    plugin: dump
+    source: tools/
+    override-pull: |
+      craftctl default
+      craftctl set version="$(sed -n 's/^HUNT_VERSION="\(.*\)"/\1/p' lib/hunt-common.sh)"
+    stage:
+      - bin/
+      - lib/hunt-common.sh
+
+apps:
+  hunt-land:
+    command: bin/hunt-land
+  procs:
+    command: bin/hunt-procs
+  net:
+    command: bin/hunt-net
+  persist:
+    command: bin/hunt-persist
+  lolbin:
+    command: bin/hunt-lolbin
+  memory:
+    command: bin/hunt-memory
+  intel:
+    command: bin/hunt-intel

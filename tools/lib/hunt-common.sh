@@ -24,6 +24,31 @@ if [ -z "${HUNT_FINDINGS:-}" ]; then
     HUNT_FINDINGS=$(mktemp "${TMPDIR:-/tmp}/hunt-findings.XXXXXX")
 fi
 
+# Sand-and-beach banner. Only when stdout is a terminal; 256-color gradient
+# (light sand -> wet sand -> sea) with a plain-yellow fallback.
+hunt_banner() {
+    [ -t 1 ] || return 0
+    if [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ]; then
+        _b1=$(printf '\033[38;5;230m'); _b2=$(printf '\033[38;5;223m')
+        _b3=$(printf '\033[38;5;222m'); _b4=$(printf '\033[38;5;180m')
+        _b5=$(printf '\033[38;5;173m'); _sea=$(printf '\033[38;5;37m')
+        _tag=$(printf '\033[38;5;137m')
+    else
+        _b1=$C_YEL; _b2=$C_YEL; _b3=$C_YEL; _b4=$C_YEL; _b5=$C_YEL
+        _sea=$C_CYN; _tag=$C_YEL
+    fi
+    cat <<BANNER
+${_b1} _                 _             _                 _ ${C_RST}
+${_b2}| |__  _   _ _ __ | |_   _____  | | __ _ _ __   __| |${C_RST}
+${_b3}| '_ \| | | | '_ \| __| |_____| | |/ _\` | '_ \ / _\` |${C_RST}
+${_b4}| | | | |_| | | | | |_          | | (_| | | | | (_| |${C_RST}
+${_b5}|_| |_|\__,_|_| |_|\__|         |_|\__,_|_| |_|\__,_|${C_RST}
+${_sea} ~ ~~ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ~~ ~ ~ ${C_RST}
+${_tag}     Living-off-the-Land forensic hunter  v${HUNT_VERSION}${C_RST}
+
+BANNER
+}
+
 hunt_ts()      { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 hunt_header()  { printf '\n%s== %s ==%s\n' "$C_BLD" "$*" "$C_RST"; }
 hunt_info()    { printf '%s[*]%s %s\n' "$C_CYN" "$C_RST" "$*"; }

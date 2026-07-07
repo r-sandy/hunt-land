@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# hunt-memory — Phase 4: live injection-artifact triage (Linux focus)
+# Without a full dump, look for RWX/anonymous exec regions, deleted-file
+# mappings, and .so's loaded from volatile paths. Read-only.
+# macOS live memory inspection is heavily restricted by SIP; this degrades to
+# a documented visibility gap there.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+hunt_header "hunt-memory v$HUNT_VERSION ($HUNT_PLATFORM) @ $(hunt_ts)"
+require_root_or_warn
+
+if [ "$HUNT_PLATFORM" = "macos" ]; then
+    hunt_warn "macOS: live per-process memory maps are not accessible without disabling SIP + task_for_pid entitlements."
+    hunt_info "Recommended: acquire a full memory image with a signed tool (e.g. macpmem/'sudo' + a notarized acquirer) and analyze offline with Volatility 3 (mac.* plugins)."
+    hunt_info "Falling back to what IS visible: check for suspicious dylibs under user-writable paths held open by processes."
+    lsof -nP 2>/dev/null | awk '$NF ~ /\.dylib$/ && ($NF ~ /^\/tmp\/|^\/private\/tmp\/|^\/Users\/[^\/]+\/(Downloads|Library\/Caches)\//) {print $1"\t"$2"\t"$NF}' \
+      | sort -u | while IFS=$(printf '\t') read -r proc pid path; do
+        finding HIGH T1055 "process '$proc' (PID $pid) has dylib mapped from volatile/user path: $path"
+    done
+    finding_summary
+    exit 0
+fi
+
+# ---------------------------- Linux -------------------------------------------
+if [ ! -r /proc/1/maps ] && [ "$(id -u)" -ne 0 ]; then
+    hunt_warn "cannot read other processes' /proc maps without root — results limited to own processes"
+fi
+
+# ---- 1. RWX anonymous regions (classic injected shellcode) T1055 ------------
+hunt_info "scanning /proc/*/maps for RWX anonymous regions..."
+for m in /proc/[0-9]*/maps; do
+    pid=$(echo "$m" | sed 's#/proc/##;s#/maps##')
+    [ -r "$m" ] || continue
+    # rwxp with no pathname (anonymous) — permission field is column 2
+    if grep -Eq '^[0-9a-f-]+ rwxp .* 00000000 00:00 0 *$' "$m" 2>/dev/null; then
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-100)
+        finding HIGH T1055 "PID $pid ($exe) has RWX anonymous memory region — injected code candidate. cmd: $cmd"
+    fi
+done
+
+# ---- 2. executable mapping of a DELETED file T1055 --------------------------
+hunt_info "scanning for executable mappings backed by deleted files..."
+for m in /proc/[0-9]*/maps; do
+    pid=$(echo "$m" | sed 's#/proc/##;s#/maps##')
+    [ -r "$m" ] || continue
+    grep -E ' r-xp .*\(deleted\)$' "$m" 2>/dev/null | head -1 | while read -r line; do
+        finding HIGH T1055 "PID $pid: executable mapping of DELETED file: $(echo "$line" | awk '{print $NF}')"
+    done
+done
+
+# ---- 3. .so loaded from volatile paths T1574 --------------------------------
+hunt_info "scanning for shared objects mapped from /tmp, /dev/shm, /var/tmp..."
+for m in /proc/[0-9]*/maps; do
+    pid=$(echo "$m" | sed 's#/proc/##;s#/maps##')
+    [ -r "$m" ] || continue
+    grep -E ' r-xp .*(/tmp/|/dev/shm/|/var/tmp/).*\.so' "$m" 2>/dev/null | awk '{print $NF}' | sort -u | while read -r so; do
+        finding HIGH T1574 "PID $pid: shared object mapped from volatile path: $so"
+    done
+done
+
+# ---- 4. memfd / anonymous-file execution T1620 ------------------------------
+hunt_info "scanning for memfd:-backed executables (fileless)..."
+for e in /proc/[0-9]*/exe; do
+    tgt=$(readlink "$e" 2>/dev/null) || continue
+    case "$tgt" in
+        *"memfd:"*|*"/memfd:"*)
+            pid=$(echo "$e" | sed 's#/proc/##;s#/exe##')
+            finding HIGH T1620 "PID $pid: executable is a memfd (in-memory only, no disk backing): $tgt" ;;
+    esac
+done
+
+# ---- 5. offline dump handoff -------------------------------------------------
+if command -v vol >/dev/null 2>&1 || command -v volatility3 >/dev/null 2>&1; then
+    hunt_ok "Volatility 3 detected — for a captured dump run: vol -f DUMP linux.malfind / linux.check_syscall / linux.pslist"
+else
+    hunt_info "No Volatility 3 found. For deep analysis, capture with AVML ('avml mem.lime') and run linux.malfind offline."
+fi
+
+finding_summary

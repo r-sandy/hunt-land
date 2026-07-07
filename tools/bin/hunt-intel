@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# hunt-intel — Phase 2b: free threat-intelligence enrichment for IOCs
+# Queries free/public TI platforms for an IP, domain, or file hash.
+#
+# OPSEC: run this on the ANALYST workstation, never on the suspect host —
+# querying TI from a compromised box leaks your IOC list to the adversary.
+#
+# Keyless sources (work out of the box):
+#   - Shodan InternetDB   (open ports / tags / CVEs for an IP)
+#   - abuse.ch URLhaus    (malware URLs)
+#   - abuse.ch ThreatFox  (C2 / IOC database)
+# Key-gated sources (set the env var to enable):
+#   - AbuseIPDB           ABUSEIPDB_KEY
+#   - AlienVault OTX      OTX_KEY
+#   - VirusTotal          VT_KEY
+#   - GreyNoise (community, keyless) always attempted for IPs
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+usage: hunt-intel <IOC> [<IOC> ...]
+       hunt-intel --stdin        (read one IOC per line)
+
+  IOC may be an IPv4 address, a domain, or a file hash (md5/sha1/sha256).
+
+Environment (optional API keys unlock more sources):
+  ABUSEIPDB_KEY   OTX_KEY   VT_KEY
+
+Examples:
+  hunt-intel 45.61.139.23
+  hunt-intel evil-c2.example malware.bad 44d88612fea8a8f36de82e1278abb02f
+  hunt-net --all | awk '{print \$3}' | sort -u | hunt-intel --stdin
+EOF
+    exit 0
+}
+
+[ $# -eq 0 ] && usage
+case "$1" in -h|--help) usage ;; esac
+command -v curl >/dev/null 2>&1 || { hunt_warn "curl is required"; exit 1; }
+JQ=0; command -v jq >/dev/null 2>&1 && JQ=1
+
+CURL="curl -s --max-time 15 -A hunt-intel/1.0"
+
+classify() {  # → ip | hash | domain
+    case "$1" in
+        *[!0-9.]*) ;;  # not pure ipv4
+        *.*.*.*) echo ip; return ;;
+    esac
+    case "$1" in
+        [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*)
+            n=${#1}
+            if [ "$n" -eq 32 ] || [ "$n" -eq 40 ] || [ "$n" -eq 64 ]; then
+                case "$1" in *[!0-9a-fA-F]*) ;; *) echo hash; return ;; esac
+            fi ;;
+    esac
+    echo domain
+}
+
+# jget <json> <jq-filter> <grep-fallback-regex>
+jget() {
+    if [ "$JQ" -eq 1 ]; then echo "$1" | jq -r "$2" 2>/dev/null
+    else echo "$1" | grep -oE "$3" 2>/dev/null | head -5; fi
+}
+
+enrich_ip() {
+    ip=$1
+    hunt_header "IP $ip"
+
+    # Shodan InternetDB (keyless)
+    r=$($CURL "https://internetdb.shodan.io/$ip")
+    if echo "$r" | grep -q '"ports"'; then
+        ports=$(jget "$r" '.ports | join(",")' '"ports":\[[^]]*\]')
+        tags=$(jget "$r"  '.tags  | join(",")' '"tags":\[[^]]*\]')
+        cves=$(jget "$r"  '.vulns | length'    '"vulns":\[[^]]*\]')
+        hunt_info "Shodan InternetDB: ports=[$ports] tags=[$tags]"
+        [ -n "$tags" ] && [ "$tags" != "null" ] && [ "$tags" != "[]" ] && \
+            finding MEDIUM T1071 "$ip tagged by Shodan: $tags"
+    else
+        hunt_info "Shodan InternetDB: no data (host not indexed / no open ports)"
+    fi
+
+    # GreyNoise community (keyless)
+    r=$($CURL "https://api.greynoise.io/v3/community/$ip")
+    if echo "$r" | grep -q '"classification"'; then
+        cls=$(jget "$r" '.classification' '"classification":"[^"]*"')
+        name=$(jget "$r" '.name' '"name":"[^"]*"')
+        hunt_info "GreyNoise: classification=$cls name=$name"
+        case "$cls" in *malicious*) finding HIGH T1071 "$ip classified MALICIOUS by GreyNoise ($name)" ;; esac
+    fi
+
+    # ThreatFox (keyless) — IOC search
+    r=$($CURL -X POST https://threatfox-api.abuse.ch/api/v1/ -d "{\"query\":\"search_ioc\",\"search_term\":\"$ip\"}")
+    if echo "$r" | grep -q '"malware"'; then
+        mw=$(jget "$r" '.data[0].malware_printable' '"malware_printable":"[^"]*"')
+        finding HIGH T1071 "$ip listed in ThreatFox — associated malware: $mw"
+    fi
+
+    # AbuseIPDB (key)
+    if [ -n "${ABUSEIPDB_KEY:-}" ]; then
+        r=$($CURL -H "Key: $ABUSEIPDB_KEY" -H "Accept: application/json" \
+             "https://api.abuseipdb.com/api/v2/check?ipAddress=$ip&maxAgeInDays=90")
+        score=$(jget "$r" '.data.abuseConfidenceScore' '"abuseConfidenceScore":[0-9]*')
+        score=$(echo "$score" | grep -oE '[0-9]+' | head -1)
+        if [ -n "$score" ]; then
+            hunt_info "AbuseIPDB: confidence=$score/100"
+            [ "$score" -ge 50 ] 2>/dev/null && finding HIGH T1071 "$ip AbuseIPDB confidence $score/100"
+        fi
+    fi
+
+    # OTX (key)
+    if [ -n "${OTX_KEY:-}" ]; then
+        r=$($CURL -H "X-OTX-API-KEY: $OTX_KEY" "https://otx.alienvault.com/api/v1/indicators/IPv4/$ip/general")
+        pulses=$(jget "$r" '.pulse_info.count' '"count":[0-9]*')
+        pulses=$(echo "$pulses" | grep -oE '[0-9]+' | head -1)
+        [ -n "$pulses" ] && [ "$pulses" -gt 0 ] 2>/dev/null && \
+            finding MEDIUM T1071 "$ip appears in $pulses OTX threat pulse(s)"
+    fi
+}
+
+enrich_domain() {
+    d=$1
+    hunt_header "Domain $d"
+    r=$($CURL -X POST https://threatfox-api.abuse.ch/api/v1/ -d "{\"query\":\"search_ioc\",\"search_term\":\"$d\"}")
+    echo "$r" | grep -q '"malware"' && \
+        finding HIGH T1071 "$d listed in ThreatFox — malware: $(jget "$r" '.data[0].malware_printable' '"malware_printable":"[^"]*"')"
+    r=$($CURL "https://urlhaus-api.abuse.ch/v1/host/" -d "host=$d")
+    echo "$r" | grep -q '"url_count"' && ! echo "$r" | grep -q '"url_count":"0"' && \
+        finding HIGH T1105 "$d has malware URLs in URLhaus (count: $(jget "$r" '.url_count' '"url_count":"[^"]*"'))"
+    if [ -n "${OTX_KEY:-}" ]; then
+        r=$($CURL -H "X-OTX-API-KEY: $OTX_KEY" "https://otx.alienvault.com/api/v1/indicators/domain/$d/general")
+        p=$(jget "$r" '.pulse_info.count' '"count":[0-9]*' | grep -oE '[0-9]+' | head -1)
+        [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && finding MEDIUM T1071 "$d in $p OTX pulse(s)"
+    fi
+    [ -z "${OTX_KEY:-}" ] && hunt_info "(set OTX_KEY for AlienVault OTX domain reputation)"
+}
+
+enrich_hash() {
+    h=$1
+    hunt_header "Hash $h"
+    r=$($CURL -X POST https://threatfox-api.abuse.ch/api/v1/ -d "{\"query\":\"search_hash\",\"hash\":\"$h\"}")
+    echo "$r" | grep -q '"malware"' && \
+        finding HIGH T1105 "$h known to ThreatFox — malware: $(jget "$r" '.data[0].malware_printable' '"malware_printable":"[^"]*"')"
+    if [ -n "${VT_KEY:-}" ]; then
+        r=$($CURL -H "x-apikey: $VT_KEY" "https://www.virustotal.com/api/v3/files/$h")
+        mal=$(jget "$r" '.data.attributes.last_analysis_stats.malicious' '"malicious":[0-9]*' | grep -oE '[0-9]+' | head -1)
+        if [ -n "$mal" ]; then
+            hunt_info "VirusTotal: $mal engine(s) flagged malicious"
+            [ "$mal" -gt 0 ] 2>/dev/null && finding HIGH T1105 "$h flagged malicious by $mal VirusTotal engine(s)"
+        fi
+    else
+        hunt_info "(set VT_KEY for VirusTotal detection ratio)"
+    fi
+}
+
+process_ioc() {
+    case $(classify "$1") in
+        ip)     enrich_ip "$1" ;;
+        hash)   enrich_hash "$1" ;;
+        domain) enrich_domain "$1" ;;
+    esac
+}
+
+hunt_header "hunt-intel v$HUNT_VERSION @ $(hunt_ts) — OPSEC: analyst-host only"
+[ "$JQ" -eq 1 ] || hunt_warn "jq not found — using regex fallback parsing (install jq for reliable results)"
+
+if [ "$1" = "--stdin" ]; then
+    while IFS= read -r ioc; do
+        ioc=$(echo "$ioc" | tr -d ' \t\r')
+        [ -n "$ioc" ] && process_ioc "$ioc"
+    done
+else
+    for ioc in "$@"; do process_ioc "$ioc"; done
+fi
+
+finding_summary

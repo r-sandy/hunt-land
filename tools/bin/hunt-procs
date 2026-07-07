@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# hunt-procs — Phase 1: volatile process-tree carving (Linux + macOS)
+# Hunts lineage anomalies: daemons spawning shells, deleted/tmp-resident
+# binaries, encoded command lines, masquerading. Read-only.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+usage: hunt-procs [--tree] [--quiet]
+  --tree    also print the full process tree (forest view)
+  --quiet   findings only, skip informational output
+EOF
+    exit 0
+}
+
+SHOW_TREE=0; QUIET=0
+for a in "$@"; do
+    case "$a" in
+        --tree) SHOW_TREE=1 ;;
+        --quiet) QUIET=1 ;;
+        -h|--help) usage ;;
+    esac
+done
+
+[ "$QUIET" -eq 1 ] || hunt_header "hunt-procs v$HUNT_VERSION ($HUNT_PLATFORM) @ $(hunt_ts)"
+require_root_or_warn
+
+# ---- full process snapshot (pid ppid user args) ------------------------------
+PS_SNAP=$(mktemp "${TMPDIR:-/tmp}/hunt-ps.XXXXXX")
+trap 'rm -f "$PS_SNAP"' EXIT
+if [ "$HUNT_PLATFORM" = "linux" ]; then
+    ps -eww -o pid=,ppid=,user=,args= > "$PS_SNAP"
+else
+    ps -axww -o pid=,ppid=,user=,args= > "$PS_SNAP"
+fi
+
+if [ "$SHOW_TREE" -eq 1 ]; then
+    hunt_header "Process tree"
+    if [ "$HUNT_PLATFORM" = "linux" ]; then
+        ps -eww --forest -o pid,ppid,user,etime,args
+    else
+        # macOS ps has no --forest; sorted ppid,pid is the portable substitute
+        ps -axww -r -o pid,ppid,user,etime,args | sort -k2 -n
+    fi
+fi
+
+# ---- 1. daemon → shell lineage (T1059) --------------------------------------
+[ "$QUIET" -eq 1 ] || hunt_info "checking for service daemons spawning shells..."
+awk '
+    { pid=$1; ppid=$2; user=$3; $1=$2=$3=""; sub(/^ +/,""); cmd[pid]=$0; parent[pid]=ppid }
+    END {
+        daemons = "nginx apache2 httpd mysqld mariadbd postgres php-fpm redis-server mongod memcached cupsd"
+        shells  = "bash sh dash zsh ksh"
+        split(daemons, D, " "); split(shells, S, " ")
+        for (pid in cmd) {
+            n = split(cmd[pid], w, " "); base = w[1]
+            gsub(/^.*\//, "", base); sub(/:$/, "", base); sub(/^-/, "", base)
+            for (i in S) if (base == S[i]) {
+                pp = parent[pid]
+                if (pp in cmd) {
+                    m = split(cmd[pp], v, " "); pbase = v[1]
+                    gsub(/^.*\//, "", pbase); sub(/:$/, "", pbase)
+                    for (j in D) if (pbase == D[j])
+                        printf "%s\t%s\t%s\t%s\n", pid, base, pbase, cmd[pid]
+                }
+            }
+        }
+    }' "$PS_SNAP" | sort -u | while IFS=$(printf '\t') read -r pid sh par cmdline; do
+        finding HIGH T1059 "PID $pid: shell '$sh' spawned by daemon '$par' — cmdline: $cmdline"
+done
+
+# ---- 2. encoded / reverse-shell command lines (T1059, T1140) ----------------
+[ "$QUIET" -eq 1 ] || hunt_info "checking command lines for encoding & reverse-shell patterns..."
+grep -E -i 'base64 (-d|--decode)|FromBase64String| -enc |/dev/tcp/|bash -i >&|nc (-e|.* -e )|python[0-9.]* -c .*(socket|pty)|mkfifo /tmp' "$PS_SNAP" \
+  | grep -v -E 'grep|hunt-' | while read -r line; do
+    pid=$(echo "$line" | awk '{print $1}')
+    finding HIGH T1059 "PID $pid: suspicious command line: $(echo "$line" | cut -c1-200)"
+done
+
+# ---- 3. executables running from volatile / world-writable paths (T1036) ----
+[ "$QUIET" -eq 1 ] || hunt_info "checking for execution from /tmp, /dev/shm, /var/tmp..."
+if [ "$HUNT_PLATFORM" = "linux" ]; then
+    for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        exe=$(readlink "$p/exe" 2>/dev/null) || continue
+        case "$exe" in
+            *"(deleted)"*)
+                finding HIGH T1055 "PID $pid: on-disk binary DELETED while running (fileless): $exe — cmdline: $(tr '\0' ' ' < "$p/cmdline" 2>/dev/null | cut -c1-150)" ;;
+            /tmp/*|/dev/shm/*|/var/tmp/*)
+                finding HIGH T1036 "PID $pid: executing from volatile path: $exe" ;;
+        esac
+    done
+else
+    awk '{ if ($4 ~ /^\/tmp\/|^\/private\/tmp\/|^\/var\/tmp\/|^\/Users\/[^\/]+\/Downloads\//) print $1"\t"$4 }' "$PS_SNAP" \
+      | while IFS=$(printf '\t') read -r pid path; do
+        finding HIGH T1036 "PID $pid: executing from volatile path: $path"
+    done
+fi
+
+# ---- 4. masquerading: trusted names in untrusted paths (T1036) --------------
+[ "$QUIET" -eq 1 ] || hunt_info "checking for name-masquerading..."
+if [ "$HUNT_PLATFORM" = "linux" ]; then
+    for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        exe=$(readlink "$p/exe" 2>/dev/null) || continue
+        base=${exe##*/}; base=${base% (deleted)}
+        case "$base" in
+            systemd|sshd|init|kworker*|crond|rsyslogd)
+                case "$exe" in
+                    /usr/*|/lib*|/sbin/*|/bin/*|/opt/*) : ;;
+                    *) finding HIGH T1036 "PID $pid: trusted name '$base' running from untrusted path: $exe" ;;
+                esac ;;
+        esac
+    done
+    # kernel-thread impostors: [bracketed] names that have a real userland exe
+    awk '$4 ~ /^\[.*\]$/ {print $1}' "$PS_SNAP" | while read -r pid; do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+        [ -n "$exe" ] && finding HIGH T1036 "PID $pid: masquerading as kernel thread but has userland exe: $exe"
+    done
+else
+    awk '{ base=$4; gsub(/^.*\//,"",base);
+           if ((base=="launchd"||base=="kernel_task"||base=="mds"||base=="WindowServer") &&
+               $4 !~ /^\/sbin\/|^\/usr\/|^\/System\//)
+               print $1"\t"$4 }' "$PS_SNAP" | while IFS=$(printf '\t') read -r pid path; do
+        finding HIGH T1036 "PID $pid: trusted macOS name in untrusted path: $path"
+    done
+fi
+
+finding_summary

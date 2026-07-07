@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# hunt-lolbin — Phase 5: LOLBin / GTFOBins usage audit (Linux + macOS)
+# Scans live command lines AND shell history for trusted binaries invoked in
+# adversary-characteristic ways. Read-only.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+usage: hunt-lolbin [--history]
+  --history   also scan shell history files (may contain benign admin activity)
+EOF
+    exit 0
+}
+
+SCAN_HIST=0
+for a in "$@"; do
+    case "$a" in
+        --history) SCAN_HIST=1 ;;
+        -h|--help) usage ;;
+    esac
+done
+
+hunt_header "hunt-lolbin v$HUNT_VERSION ($HUNT_PLATFORM) @ $(hunt_ts)"
+require_root_or_warn
+
+# Patterns → each: regex \t severity \t attack \t description  (|-separated regex ok)
+# Kept portable to grep -E.
+scan_stream() {  # scan_stream <source-label>
+    src=$1
+    while IFS= read -r line; do
+        case "$line" in *hunt-lolbin*|*grep*) continue ;; esac
+        # download-and-execute cradles
+        echo "$line" | grep -Eq '(curl|wget)[^|]*\|[[:space:]]*(bash|sh|python|perl)' && \
+            finding HIGH T1105 "$src: download|shell cradle: $(echo "$line" | cut -c1-160)"
+        echo "$line" | grep -Eq 'curl .*(-o|--output) /tmp|wget .*-O /tmp|certutil -urlcache|bitsadmin /transfer' && \
+            finding HIGH T1105 "$src: remote file staging to volatile path: $(echo "$line" | cut -c1-160)"
+        # reverse shells
+        echo "$line" | grep -Eq 'bash -i >&|/dev/tcp/|nc .*-e |ncat .*-e |socat .*(exec|system):|mkfifo .*(nc|/dev/tcp)' && \
+            finding HIGH T1059 "$src: reverse-shell pattern: $(echo "$line" | cut -c1-160)"
+        echo "$line" | grep -Eq 'python[0-9.]* -c .*(socket|pty\.spawn|subprocess)|perl -e .*Socket|ruby -e .*TCPSocket|php -r .*fsockopen' && \
+            finding HIGH T1059 "$src: scripting reverse shell: $(echo "$line" | cut -c1-160)"
+        # GTFOBins privilege / exec tricks
+        echo "$line" | grep -Eq '(find|awk|gawk|nmap|vim|gdb|tar|zip) .*(-exec|system\(|--interactive|\-\-checkpoint-action|!/bin/(bash|sh))' && \
+            finding MEDIUM T1548 "$src: GTFOBins-style exec trick: $(echo "$line" | cut -c1-160)"
+        # payload staging via encoders
+        echo "$line" | grep -Eq '(base64 (-d|--decode)|xxd -r|openssl enc -d).*\|[[:space:]]*(bash|sh)' && \
+            finding HIGH T1140 "$src: encoded payload decoded to shell: $(echo "$line" | cut -c1-160)"
+        # detach/hide
+        echo "$line" | grep -Eq '(nohup|setsid|disown).*(nc|ncat|/dev/tcp|python|perl|curl)' && \
+            finding MEDIUM T1059 "$src: detached network process: $(echo "$line" | cut -c1-160)"
+        if [ "$HUNT_PLATFORM" = "macos" ]; then
+            echo "$line" | grep -Eq 'osascript -e|curl .*\| *osascript|sqlite3 .*TCC.db' && \
+                finding MEDIUM T1059.002 "$src: macOS AppleScript/TCC abuse: $(echo "$line" | cut -c1-160)"
+        fi
+    done
+}
+
+# ---- live process command lines ----------------------------------------------
+hunt_info "scanning live command lines..."
+if [ "$HUNT_PLATFORM" = "linux" ]; then
+    ps -eww -o args= | scan_stream "live-proc"
+else
+    ps -axww -o args= | scan_stream "live-proc"
+fi
+
+# ---- shell history (opt-in; can be noisy) ------------------------------------
+if [ "$SCAN_HIST" -eq 1 ]; then
+    hunt_info "scanning shell history files..."
+    for h in /root/.bash_history /home/*/.bash_history /Users/*/.bash_history \
+             /home/*/.zsh_history /Users/*/.zsh_history "$HOME/.bash_history" "$HOME/.zsh_history"; do
+        [ -f "$h" ] || continue
+        scan_stream "hist:$h" < "$h"
+    done
+fi
+
+finding_summary

@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# hunt-land — orchestrator: runs the full LotL hunt pipeline and emits a
+# single Compromise Assessment Report. Read-only by default.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+hunt-land v$HUNT_VERSION — Living-off-the-Land forensic hunter ($HUNT_PLATFORM)
+
+usage: hunt-land [options]
+  --watch            include network beacon watch (adds ~60s)
+  --history          scan shell history for LOLBin usage
+  --days N           persistence lookback window (default 30)
+  --report FILE      write the full report to FILE (default: ./hunt-report-<host>-<ts>.md)
+  --quick            skip memory phase (fastest triage)
+  -h, --help         show this help
+
+Phases: procs → net → persist → lolbin → memory → correlate
+Individual tools (hunt-procs, hunt-net, hunt-persist, hunt-lolbin,
+hunt-memory, hunt-intel) can also be run standalone.
+
+Enrichment: pipe external IPs from the report to 'hunt-intel' on your
+ANALYST workstation — never query TI from the suspect host.
+EOF
+    exit 0
+}
+
+WATCH=""; HISTORY=""; DAYS=30; QUICK=0
+HOST=$(hostname 2>/dev/null | cut -d. -f1); TS=$(date -u '+%Y%m%dT%H%M%SZ')
+REPORT="./hunt-report-${HOST}-${TS}.md"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --watch) WATCH="--watch" ;;
+        --history) HISTORY="--history" ;;
+        --days) DAYS=${2:-30}; shift ;;
+        --report) REPORT=${2:?}; shift ;;
+        --quick) QUICK=1 ;;
+        -h|--help) usage ;;
+    esac
+    shift
+done
+
+# Shared findings file across every phase
+export HUNT_FINDINGS
+: > "$HUNT_FINDINGS"
+
+RAW=$(mktemp "${TMPDIR:-/tmp}/hunt-raw.XXXXXX")
+trap 'rm -f "$RAW"' EXIT
+
+run_phase() {  # run_phase <label> <cmd...>
+    label=$1; shift
+    printf '\n\n######## %s ########\n' "$label" >> "$RAW"
+    hunt_header "PHASE: $label"
+    "$@" 2>&1 | tee -a "$RAW"
+}
+
+echo "$C_BLD== hunt-land compromise assessment — $HOST @ $(hunt_ts) ==$C_RST"
+require_root_or_warn
+
+run_phase "1-process-tree"   "$SCRIPT_DIR/hunt-procs"   --tree
+run_phase "2-network"        "$SCRIPT_DIR/hunt-net"     $WATCH
+run_phase "3-persistence"    "$SCRIPT_DIR/hunt-persist" --days "$DAYS"
+run_phase "5-lolbin"         "$SCRIPT_DIR/hunt-lolbin"  $HISTORY
+[ "$QUICK" -eq 0 ] && run_phase "4-memory" "$SCRIPT_DIR/hunt-memory"
+
+# ---- correlation & verdict ---------------------------------------------------
+H=$(grep -c '^HIGH'   "$HUNT_FINDINGS" 2>/dev/null); H=${H:-0}
+M=$(grep -c '^MEDIUM' "$HUNT_FINDINGS" 2>/dev/null); M=${M:-0}
+L=$(grep -c '^LOW'    "$HUNT_FINDINGS" 2>/dev/null); L=${L:-0}
+
+if   [ "$H" -ge 2 ]; then VERDICT="COMPROMISED (multiple corroborating high-severity signals)"
+elif [ "$H" -eq 1 ]; then VERDICT="SUSPICIOUS (one high-severity signal — corroborate before acting)"
+elif [ "$M" -ge 3 ]; then VERDICT="SUSPICIOUS (cluster of medium signals)"
+elif [ "$M" -ge 1 ]; then VERDICT="INCONCLUSIVE (isolated medium signals — likely noise, verify)"
+else                      VERDICT="CLEAN-SO-FAR (no LotL indicators surfaced by these checks)"
+fi
+
+# ---- write report ------------------------------------------------------------
+{
+    echo "# Compromise Assessment Report"
+    echo
+    echo "- **Host:** $HOST"
+    echo "- **Platform:** $HUNT_PLATFORM"
+    echo "- **Generated (UTC):** $(hunt_ts)"
+    echo "- **Tool:** hunt-land v$HUNT_VERSION"
+    echo "- **Privilege:** $([ "$(id -u)" -eq 0 ] && echo root || echo "non-root (visibility limited)")"
+    echo
+    echo "## Executive verdict"
+    echo
+    echo "**$VERDICT**"
+    echo
+    echo "Signal counts — HIGH: $H · MEDIUM: $M · LOW: $L"
+    echo
+    echo "## Ranked findings"
+    echo
+    if [ "$((H+M+L))" -eq 0 ]; then
+        echo "_No findings recorded._"
+    else
+        echo "| Severity | ATT&CK | Observation |"
+        echo "|----------|--------|-------------|"
+        for sev in HIGH MEDIUM LOW; do
+            grep "^$sev" "$HUNT_FINDINGS" 2>/dev/null | while IFS=$(printf '\t') read -r s a msg; do
+                printf '| %s | %s | %s |\n' "$s" "$a" "$(echo "$msg" | sed 's/|/\\|/g')"
+            done
+        done
+    fi
+    echo
+    echo "## Recommended next steps"
+    echo
+    echo "1. Enrich every external IP/domain above with \`hunt-intel <ioc>\` **from your analyst workstation** (not this host)."
+    echo "2. For HIGH findings, capture volatile evidence before acting: \`ls -l /proc/<pid>/exe\`, \`cat /proc/<pid>/maps\`, full cmdline, and open sockets."
+    echo "3. Consider a memory image (Linux: AVML → Volatility 3 \`linux.malfind\`) before any eradication."
+    echo "4. Only after evidence capture and operator sign-off: scoped containment (targeted egress block to the C2 IP, dependency-aware process kill)."
+    echo
+    echo "## Visibility gaps"
+    echo
+    [ "$(id -u)" -eq 0 ] || echo "- Ran without root: other users' processes, sockets, and \`/proc/<pid>/maps\` were partially invisible. **Re-run as root.**"
+    [ "$HUNT_PLATFORM" = "macos" ] && echo "- macOS SIP blocks live per-process memory inspection; memory phase is a documented gap (offline image required)."
+    [ -n "$WATCH" ] || echo "- Beacon watch skipped (\`--watch\` not set): low-and-slow C2 may not appear in a single snapshot."
+    echo
+    echo "---"
+    echo "## Full evidence appendix"
+    echo
+    echo '```'
+    cat "$RAW"
+    echo '```'
+} > "$REPORT"
+
+hunt_header "VERDICT: $VERDICT"
+printf '  HIGH: %s%s%s   MEDIUM: %s%s%s   LOW: %s\n' "$C_RED" "$H" "$C_RST" "$C_YEL" "$M" "$C_RST" "$L"
+hunt_ok "Full report written to: $REPORT"
+[ "$H" -ge 1 ] && exit 2
+[ "$M" -ge 1 ] && exit 1
+exit 0

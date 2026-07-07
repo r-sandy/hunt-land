@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# hunt-persist — Phase 3: persistence & execution-surface sweep (Linux + macOS)
+# Enumerates native autostart mechanisms and flags recent or suspicious
+# entries. Read-only.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+usage: hunt-persist [--days N]
+  --days N   flag persistence artifacts modified within N days (default 30)
+EOF
+    exit 0
+}
+
+DAYS=30
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --days) DAYS=${2:-30}; shift ;;
+        -h|--help) usage ;;
+    esac
+    shift
+done
+
+hunt_header "hunt-persist v$HUNT_VERSION ($HUNT_PLATFORM) @ $(hunt_ts) — window: ${DAYS}d"
+require_root_or_warn
+
+SUS_CONTENT='curl|wget|/dev/tcp/|base64|nc -|ncat|python.*-c|osascript|\.onion|mkfifo'
+
+# flag_recent <dir-or-file> <attack> <label>
+flag_recent() {
+    [ -e "$1" ] || return 0
+    find "$1" -type f -mtime "-$DAYS" 2>/dev/null | while read -r f; do
+        finding MEDIUM "$2" "$3 modified within ${DAYS}d: $f ($(ls -l "$f" 2>/dev/null | awk '{print $6,$7,$8}'))"
+    done
+}
+
+# grep_sus <file> <attack> <label>
+grep_sus() {
+    [ -f "$1" ] || return 0
+    grep -E -i "$SUS_CONTENT" "$1" 2>/dev/null | grep -v '^\s*#' | head -5 | while read -r hit; do
+        finding HIGH "$2" "$3 contains suspicious command in $1: $(echo "$hit" | cut -c1-160)"
+    done
+}
+
+if [ "$HUNT_PLATFORM" = "linux" ]; then
+    # ---- cron (T1053.003) ----
+    hunt_info "sweeping cron..."
+    for f in /etc/crontab /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/*; do
+        grep_sus "$f" T1053.003 "cron entry"
+    done
+    flag_recent /etc/cron.d T1053.003 "cron.d file"
+    flag_recent /var/spool/cron T1053.003 "user crontab"
+
+    # ---- systemd (T1543.002) ----
+    hunt_info "sweeping systemd units & timers..."
+    for d in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /run/systemd/system; do
+        flag_recent "$d" T1543.002 "systemd unit"
+    done
+    for u in /etc/systemd/system/*.service /etc/systemd/system/*/*.service; do
+        [ -f "$u" ] || continue
+        grep -E 'ExecStart=.*(/tmp/|/dev/shm/|/var/tmp/|curl|wget|base64|/dev/tcp)' "$u" 2>/dev/null | head -3 | while read -r hit; do
+            finding HIGH T1543.002 "systemd unit $u has suspicious ExecStart: $hit"
+        done
+    done
+    find "$HOME/.config/systemd/user" /home/*/.config/systemd/user -type f 2>/dev/null | while read -r f; do
+        finding MEDIUM T1543.002 "per-user systemd unit present: $f"
+    done
+
+    # ---- ld.so.preload / LD_PRELOAD (T1574.006) ----
+    hunt_info "checking preload hijacks..."
+    if [ -s /etc/ld.so.preload ]; then
+        finding HIGH T1574.006 "/etc/ld.so.preload is NON-EMPTY: $(cat /etc/ld.so.preload | tr '\n' ' ')"
+    fi
+    grep -l 'LD_PRELOAD' /etc/environment /etc/profile /etc/profile.d/* 2>/dev/null | while read -r f; do
+        finding HIGH T1574.006 "LD_PRELOAD set in $f"
+    done
+
+    # ---- shell rc files (T1546.004) ----
+    hunt_info "sweeping shell rc files..."
+    for f in /root/.bashrc /root/.profile /home/*/.bashrc /home/*/.profile /home/*/.bash_login /home/*/.zshrc; do
+        grep_sus "$f" T1546.004 "shell rc"
+    done
+
+    # ---- accounts & keys (T1098) ----
+    hunt_info "checking accounts & SSH keys..."
+    awk -F: '$3 == 0 && $1 != "root" {print $1}' /etc/passwd | while read -r u; do
+        finding HIGH T1098 "non-root account with UID 0: $u"
+    done
+    for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+        [ -f "$f" ] || continue
+        if [ -n "$(find "$f" -mtime "-$DAYS" 2>/dev/null)" ]; then
+            finding MEDIUM T1098.004 "authorized_keys modified within ${DAYS}d: $f ($(grep -c . "$f") key(s))"
+        fi
+    done
+
+    # ---- misc: rc.local, udev, at (T1037, T1053) ----
+    [ -x /etc/rc.local ] && finding LOW T1037 "/etc/rc.local exists and is executable: $(grep -v -E '^\s*(#|$)' /etc/rc.local | head -3 | tr '\n' '; ')"
+    flag_recent /etc/udev/rules.d T1546 "udev rule"
+    command -v atq >/dev/null 2>&1 && [ -n "$(atq 2>/dev/null)" ] && finding MEDIUM T1053.002 "pending at job(s): $(atq 2>/dev/null | tr '\n' '; ')"
+
+else # ---------------------------- macOS -------------------------------------
+    # ---- launchd (T1543.001 / T1543.004) ----
+    hunt_info "sweeping LaunchAgents & LaunchDaemons..."
+    for d in /Library/LaunchDaemons /Library/LaunchAgents /Users/*/Library/LaunchAgents "$HOME/Library/LaunchAgents"; do
+        [ -d "$d" ] || continue
+        flag_recent "$d" T1543.004 "launchd plist"
+        for plist in "$d"/*.plist; do
+            [ -f "$plist" ] || continue
+            # readable heuristics on the plist body (works for XML plists;
+            # binary plists are converted when plutil is present)
+            body=$(plutil -convert xml1 -o - "$plist" 2>/dev/null || cat "$plist" 2>/dev/null)
+            echo "$body" | grep -E -i "$SUS_CONTENT" | head -3 | while read -r hit; do
+                finding HIGH T1543.004 "launchd plist $plist runs suspicious command: $(echo "$hit" | cut -c1-160)"
+            done
+            echo "$body" | grep -q 'DYLD_INSERT_LIBRARIES' && \
+                finding HIGH T1574.006 "launchd plist $plist sets DYLD_INSERT_LIBRARIES (library injection)"
+        done
+    done
+
+    # ---- cron & periodic (T1053) ----
+    hunt_info "sweeping cron & periodic..."
+    for f in /usr/lib/cron/tabs/* /etc/crontab; do grep_sus "$f" T1053.003 "cron entry"; done
+    flag_recent /etc/periodic T1053 "periodic script"
+
+    # ---- emond — legacy but abused (T1546.014) ----
+    if [ -d /etc/emond.d/rules ] && [ -n "$(ls -A /etc/emond.d/rules 2>/dev/null)" ]; then
+        finding MEDIUM T1546.014 "emond rules present (legacy persistence vector): $(ls /etc/emond.d/rules | tr '\n' ' ')"
+    fi
+
+    # ---- shell rc files (T1546.004) ----
+    hunt_info "sweeping shell rc files..."
+    for f in /Users/*/.zshrc /Users/*/.bash_profile /Users/*/.bashrc "$HOME/.zshrc" "$HOME/.bash_profile"; do
+        grep_sus "$f" T1546.004 "shell rc"
+    done
+
+    # ---- login items & startup (T1547.015) ----
+    flag_recent /Library/StartupItems T1037.005 "StartupItem"
+    for f in /Users/*/Library/Application\ Support/com.apple.backgroundtaskmanagementagent/backgrounditems.btm; do
+        [ -f "$f" ] && finding LOW T1547.015 "login items registry present (inspect in System Settings): $f"
+    done
+
+    # ---- SSH keys & sudoers (T1098) ----
+    for f in /var/root/.ssh/authorized_keys /Users/*/.ssh/authorized_keys; do
+        [ -f "$f" ] || continue
+        [ -n "$(find "$f" -mtime "-$DAYS" 2>/dev/null)" ] && \
+            finding MEDIUM T1098.004 "authorized_keys modified within ${DAYS}d: $f"
+    done
+    flag_recent /etc/sudoers.d T1548.003 "sudoers.d file"
+fi
+
+finding_summary

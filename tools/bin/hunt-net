@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# hunt-net — Phase 2: network socket ↔ process cross-referencing (Linux + macOS)
+# Flags native binaries egressing to raw external IPs, odd listeners, and
+# (with --watch) constant-interval beaconing candidates. Read-only.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+for _lib in "$SCRIPT_DIR/../lib/hunt-common.sh" "$SCRIPT_DIR/../lib/hunt-land/hunt-common.sh"; do
+    [ -f "$_lib" ] && . "$_lib" && _lib_ok=1 && break
+done
+[ -n "${_lib_ok:-}" ] || { echo "error: hunt-common.sh not found" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+usage: hunt-net [--watch [SAMPLES] [INTERVAL_S]] [--all]
+  --watch   beaconing detection: sample connections repeatedly (default 6 x 10s)
+            and flag peers persistently contacted by the same process
+  --all     dump the full connection table before analysis
+EOF
+    exit 0
+}
+
+WATCH=0; SAMPLES=6; INTERVAL=10; SHOW_ALL=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --watch) WATCH=1
+                 case "${2:-}" in [0-9]*) SAMPLES=$2; shift ;; esac
+                 case "${2:-}" in [0-9]*) INTERVAL=$2; shift ;; esac ;;
+        --all) SHOW_ALL=1 ;;
+        -h|--help) usage ;;
+    esac
+    shift
+done
+
+hunt_header "hunt-net v$HUNT_VERSION ($HUNT_PLATFORM) @ $(hunt_ts)"
+require_root_or_warn
+
+# snapshot_established → lines of: proc \t pid \t raddr \t rport
+snapshot_established() {
+    if [ "$HUNT_PLATFORM" = "linux" ]; then
+        if command -v ss >/dev/null 2>&1; then
+            ss -tnp state established 2>/dev/null | awk 'NR>1 {
+                peer=$4; port=peer; sub(/:[^:]*$/,"",peer); sub(/^.*:/,"",port)
+                gsub(/[\[\]]/,"",peer)
+                proc="?"; pid="?"
+                if (match($0, /users:\(\("[^"]+",pid=[0-9]+/)) {
+                    u=substr($0,RSTART,RLENGTH)
+                    proc=u; sub(/^users:\(\("/,"",proc); sub(/".*/,"",proc)
+                    pid=u; sub(/^.*pid=/,"",pid)
+                }
+                printf "%s\t%s\t%s\t%s\n", proc, pid, peer, port
+            }'
+        else
+            netstat -tnp 2>/dev/null | awk '/ESTABLISHED/ {
+                peer=$5; port=peer; sub(/:[^:]*$/,"",peer); sub(/^.*:/,"",port)
+                split($7,a,"/"); printf "%s\t%s\t%s\t%s\n", (a[2]?a[2]:"?"), (a[1]?a[1]:"?"), peer, port
+            }'
+        fi
+    else
+        lsof -nP -iTCP -sTCP:ESTABLISHED 2>/dev/null | awk 'NR>1 {
+            n=$NF; sub(/^.*->/,"",n)
+            peer=n; sub(/:[^:]*$/,"",peer); port=n; sub(/^.*:/,"",port)
+            printf "%s\t%s\t%s\t%s\n", $1, $2, peer, port
+        }'
+    fi
+}
+
+snapshot_listeners() {
+    if [ "$HUNT_PLATFORM" = "linux" ]; then
+        if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null
+        else netstat -tlnp 2>/dev/null; fi
+    else
+        lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null
+    fi
+}
+
+COMMON_PORTS=" 22 25 53 80 110 123 143 443 465 587 993 995 3306 5432 6379 8080 8443 "
+NO_EGRESS_BINS=" cron crond atd sshd nginx apache2 httpd cupsd rsyslogd systemd-logind launchd mdworker "
+
+SNAP=$(mktemp "${TMPDIR:-/tmp}/hunt-net.XXXXXX")
+trap 'rm -f "$SNAP" "$SNAP.watch"' EXIT
+snapshot_established > "$SNAP"
+
+if [ "$SHOW_ALL" -eq 1 ]; then
+    hunt_header "Established connections (proc pid peer port)"
+    column -t "$SNAP" 2>/dev/null || cat "$SNAP"
+fi
+
+# ---- 1. external egress analysis (T1071) ------------------------------------
+hunt_info "analyzing $(wc -l < "$SNAP" | tr -d ' ') established connection(s)..."
+sort -u "$SNAP" | while IFS=$(printf '\t') read -r proc pid peer port; do
+    is_private_ip "$peer" && continue
+    # native binary that has no business egressing
+    case "$NO_EGRESS_BINS" in
+        *" $proc "*)
+            finding HIGH T1071 "'$proc' (PID $pid) should not egress but is connected to $peer:$port" ;;
+    esac
+    # shells/interpreters talking to the internet directly
+    case "$proc" in
+        bash|sh|dash|zsh|nc|ncat|socat)
+            finding HIGH T1059 "shell/net-tool '$proc' (PID $pid) connected to $peer:$port — possible reverse shell" ;;
+        python*|perl|ruby|php)
+            finding MEDIUM T1059 "interpreter '$proc' (PID $pid) connected to $peer:$port — verify it is a known app" ;;
+    esac
+    # uncommon destination port
+    case "$COMMON_PORTS" in
+        *" $port "*) : ;;
+        *) finding MEDIUM T1071 "'$proc' (PID $pid) → $peer:$port (uncommon port)" ;;
+    esac
+done
+
+# ---- 2. listener audit (T1571) -----------------------------------------------
+hunt_info "auditing listeners..."
+snapshot_listeners | grep -v -E '127\.0\.0\.1|::1|\*:22 |:22 .*LISTEN|Proto|State' | while read -r line; do
+    if [ "$HUNT_PLATFORM" = "linux" ]; then
+        pid=$(echo "$line" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+        [ -n "$pid" ] || continue
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+        case "$exe" in
+            /tmp/*|/dev/shm/*|/var/tmp/*|/home/*)
+                finding HIGH T1571 "listener owned by user-writable binary: $exe — $line" ;;
+        esac
+    else
+        path=$(echo "$line" | awk '{print $1}')
+        case "$line" in
+            *"/tmp/"*|*"/Users/"*) finding MEDIUM T1571 "listener from user path: $line" ;;
+        esac
+    fi
+done
+
+# ---- 3. beaconing watch (T1071) -----------------------------------------------
+if [ "$WATCH" -eq 1 ]; then
+    hunt_info "beacon watch: $SAMPLES samples every ${INTERVAL}s (total $((SAMPLES*INTERVAL))s)..."
+    : > "$SNAP.watch"
+    i=0
+    while [ "$i" -lt "$SAMPLES" ]; do
+        snapshot_established >> "$SNAP.watch"
+        i=$((i+1))
+        [ "$i" -lt "$SAMPLES" ] && sleep "$INTERVAL"
+    done
+    # a peer+proc pair present in >=80% of samples to an external IP = persistent channel
+    sort "$SNAP.watch" | uniq -c | while read -r count proc pid peer port; do
+        [ "$count" -ge $(( (SAMPLES*8+9)/10 )) ] || continue
+        is_private_ip "$peer" && continue
+        finding HIGH T1071 "persistent channel: '$proc' (PID $pid) held $peer:$port across $count/$SAMPLES samples — beaconing/C2 candidate"
+    done
+fi
+
+finding_summary

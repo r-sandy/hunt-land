@@ -49,6 +49,18 @@ individually-innocent signals into a high-confidence, evidence-backed verdict.
 - Works on a **live host**, a mounted disk image, or a **provided artifact**
   (memory dump, `/proc` snapshot, EVTX/auditd logs, netstat capture).
 
+## Standalone Toolkit (`tools/`)
+
+The phases below are also packaged as installable CLI tools that run **without
+Claude**, on Linux and macOS (bash 3.2+, no dependencies): `hunt-procs`,
+`hunt-net`, `hunt-persist`, `hunt-lolbin`, `hunt-memory`, and an `hunt-intel`
+free-threat-intel enricher, tied together by the `hunt-land` orchestrator which
+emits an ATT&CK-mapped Compromise Assessment Report and a verdict-based exit
+code. Install with `tools/install.sh`; see `tools/README.md`. When operating on
+a real host you can either drive these commands yourself or run the tools and
+interpret their output. `hunt-intel` is the only tool that touches the network
+and must be run on the analyst workstation, never the suspect host.
+
 ## Multi-Phase Hunt Pipeline
 
 Run phases in order; each feeds the correlation engine in Phase 6.

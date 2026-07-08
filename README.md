@@ -24,8 +24,7 @@ It ships in two forms:
 1. **A Claude Code skill** ([`SKILL.md`](SKILL.md)) — a structured hunt
    methodology Claude follows when you ask it to run a compromise assessment.
 2. **A standalone CLI toolkit** ([`tools/`](tools/)) — installable bash tools
-   that run the same methodology **without Claude**, on Linux and macOS, plus
-   a native PowerShell port for Windows ([`tools/windows/`](tools/windows/)).
+   that run on Linux and macOS, plus a native PowerShell port for Windows ([`tools/windows/`](tools/windows/)).
 
 ## The hunt pipeline
 

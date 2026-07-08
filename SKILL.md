@@ -62,8 +62,7 @@ PowerShell 5.1+, no dependencies) lives in `tools/windows/` — install with
 `tools/windows/install.ps1`. When operating on a real host you can either
 drive these commands yourself or run the tools and interpret their output.
 `hunt-intel` is the only tool that touches the network and must be run on the
-analyst workstation, never the suspect host. Per-tool signal-quality tuning
-notes are in `Tuning.md`.
+analyst workstation, never the suspect host.
 
 ## Multi-Phase Hunt Pipeline
 

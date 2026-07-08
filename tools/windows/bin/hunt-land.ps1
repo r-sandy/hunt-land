@@ -132,7 +132,7 @@ $lines.Add('## Visibility gaps')
 $lines.Add('')
 if (-not $isAdmin) { $lines.Add('- Ran without Administrator: other users'' processes, sockets, memory regions and HKU hives were partially invisible. **Re-run elevated.**') }
 if (-not $Watch)   { $lines.Add('- Beacon watch skipped (`-Watch` not set): low-and-slow C2 may not appear in a single snapshot.') }
-if (-not $Baseline) { $lines.Add('- No network baseline supplied (`-Baseline`): uncommon-port egress was reported at LOW confidence only (see Tuning.md).') }
+if (-not $Baseline) { $lines.Add('- No network baseline supplied (`-Baseline`): uncommon-port egress was reported at LOW confidence only.') }
 if ($Quick)        { $lines.Add('- Memory phase skipped (`-Quick`): in-memory-only implants (RWX injected regions) were not checked.') }
 $lines.Add('')
 $lines.Add('---')

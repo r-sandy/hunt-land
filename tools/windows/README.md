@@ -50,7 +50,7 @@ degrade gracefully and the report flags the visibility gap. Use 64-bit
 PowerShell (the default) — the memory scanner cannot walk 64-bit processes
 from a 32-bit host process.
 
-## Tuning (see ../../Tuning.md)
+## Tuning
 
 This port bakes in the signal-quality lessons from the Linux toolkit:
 

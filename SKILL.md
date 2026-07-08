@@ -56,10 +56,14 @@ Claude**, on Linux and macOS (bash 3.2+, no dependencies): `hunt-procs`,
 `hunt-net`, `hunt-persist`, `hunt-lolbin`, `hunt-memory`, and an `hunt-intel`
 free-threat-intel enricher, tied together by the `hunt-land` orchestrator which
 emits an ATT&CK-mapped Compromise Assessment Report and a verdict-based exit
-code. Install with `tools/install.sh`; see `tools/README.md`. When operating on
-a real host you can either drive these commands yourself or run the tools and
-interpret their output. `hunt-intel` is the only tool that touches the network
-and must be run on the analyst workstation, never the suspect host.
+code. Install with `tools/install.sh`; see `tools/README.md`. A native
+**Windows PowerShell** port of the same pipeline (`hunt-*.ps1`, Windows
+PowerShell 5.1+, no dependencies) lives in `tools/windows/` — install with
+`tools/windows/install.ps1`. When operating on a real host you can either
+drive these commands yourself or run the tools and interpret their output.
+`hunt-intel` is the only tool that touches the network and must be run on the
+analyst workstation, never the suspect host. Per-tool signal-quality tuning
+notes are in `Tuning.md`.
 
 ## Multi-Phase Hunt Pipeline
 

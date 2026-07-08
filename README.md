@@ -24,7 +24,8 @@ It ships in two forms:
 1. **A Claude Code skill** ([`SKILL.md`](SKILL.md)) — a structured hunt
    methodology Claude follows when you ask it to run a compromise assessment.
 2. **A standalone CLI toolkit** ([`tools/`](tools/)) — installable bash tools
-   that run the same methodology **without Claude**, on Linux and macOS.
+   that run the same methodology **without Claude**, on Linux and macOS, plus
+   a native PowerShell port for Windows ([`tools/windows/`](tools/windows/)).
 
 ## The hunt pipeline
 
@@ -57,6 +58,7 @@ independent signals converge:
 | **yum/dnf** (RHEL/Fedora) | download the `.rpm` from [Releases](https://github.com/r-sandy/hunt-land/releases), then `sudo dnf install ./hunt-land-*.noarch.rpm` |
 | **brew** (macOS/Linux) | `brew tap r-sandy/hunt-land https://github.com/r-sandy/hunt-land && brew install hunt-land` |
 | **from source** | `git clone https://github.com/r-sandy/hunt-land && hunt-land/tools/install.sh` |
+| **Windows (PowerShell)** | `git clone https://github.com/r-sandy/hunt-land` then `powershell -ExecutionPolicy Bypass -File hunt-land\tools\windows\install.ps1 -AddToPath` |
 
 Packages are built from [`packaging/`](packaging/) and `snap/snapcraft.yaml`;
 pushing a `v*` tag triggers the [release workflow](.github/workflows/release.yml),
@@ -91,10 +93,11 @@ explicit request.
 | | Linux | macOS | Windows |
 |-|:-----:|:-----:|:-------:|
 | Claude skill methodology | ✅ | ✅ | ✅ |
-| CLI toolkit | ✅ | ✅ | — |
+| CLI toolkit | ✅ | ✅ | ✅ |
 
-Windows is covered by the skill's methodology (PowerShell/WMI/LOLBAS); the CLI
-toolkit targets Linux and macOS.
+Linux/macOS use the bash toolkit ([`tools/`](tools/)); Windows uses the native
+PowerShell port ([`tools/windows/`](tools/windows/), Windows PowerShell 5.1+,
+no dependencies). `hunt-intel` enrichment runs on the analyst workstation.
 
 ## Threat-intel enrichment
 

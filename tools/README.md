@@ -4,6 +4,9 @@ Individual command-line tools that implement the hunt-land Living-off-the-Land
 methodology **without Claude**. Pure POSIX shell + coreutils — nothing to
 compile, no runtime dependencies. Bash 3.2 compatible (works on stock macOS).
 
+**Windows?** A native PowerShell port of the full pipeline lives in
+[`windows/`](windows/) — Windows PowerShell 5.1 compatible, no dependencies.
+
 ## Install
 
 ```sh
